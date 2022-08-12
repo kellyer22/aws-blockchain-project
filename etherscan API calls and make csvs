@@ -1,0 +1,763 @@
+import logging
+from typing import Any
+import os
+
+import requests
+from eth_typing import URI
+from web3._utils.request import _get_session
+from web3.providers.rpc import HTTPProvider
+from web3.types import Middleware, RPCEndpoint, RPCResponse
+from requests_auth_aws_sigv4 import AWSSigV4
+
+from web3 import Web3
+from web3.middleware import geth_poa_middleware
+
+import boto3
+
+import matplotlib.pyplot as plt
+from datetime import datetime, time
+import time
+import json
+from requests import get
+import random as rand
+
+"""
+Note: Everytime you open this environment, make sure you set these environment variables:
+
+export AWS_ACCESS_KEY_ID=
+export AWS_SECRET_ACCESS_KEY=
+export AWS_REGION=us-east-1
+export AMB_HTTPS_ENDPOINT=node here
+
+"""
+
+# -------- Signature and HTTP Endpoint Setup -------- #
+
+aws_auth = AWSSigV4(
+    'managedblockchain',
+    aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+    aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+    region=os.environ.get('AWS_REGION') # us-east-1
+)
+
+
+def make_post_request(
+        endpoint_uri: URI, data: bytes, *args: Any, **kwargs: Any) -> bytes:
+    kwargs.setdefault('timeout', 10)
+    session = _get_session(endpoint_uri)
+    # https://github.com/python/mypy/issues/2582
+    response = session.post(endpoint_uri, data=data,
+                            *args, **kwargs, auth=aws_auth)  # type: ignore
+    response.raise_for_status()
+    
+    return response.content
+
+
+class AMBHTTPProvider(HTTPProvider):
+    def make_request(self, method: RPCEndpoint, params: Any) -> RPCResponse:
+        self.logger.debug("Making request HTTP. URI: %s, Method: %s",
+                          self.endpoint_uri, method)
+
+        # .decode() since the AWS sig library expects a string.
+        request_data = self.encode_rpc_request(method, params).decode()
+        raw_response = make_post_request(
+            self.endpoint_uri,
+            request_data,
+            **self.get_request_kwargs()
+        )
+        response = self.decode_rpc_response(raw_response)
+        self.logger.debug("Getting response HTTP. URI: %s, "
+                          "Method: %s, Response: %s",
+                          self.endpoint_uri, method, response)
+        return response
+        
+# -------- Check if we are connected to the node / network -------- #
+async_provider = AMBHTTPProvider(endpoint_uri=os.environ.get('AMB_HTTPS_ENDPOINT'))
+async_w3 = Web3(async_provider)
+
+# inject the poa compatibility middleware to the innermost layer (needed for Rinkeby Network)
+# async_w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+
+# confirm that the connection is successful
+print("Are we connected?:\n", async_w3.isConnected())
+print("client version:\n", async_w3.clientVersion)
+
+
+# ---------------- Secrets Manager Code ---------------------- #
+
+def get_wallet_private_key():
+    secrets_manager_client = boto3.client(
+        'secretsmanager'
+    )
+    
+    iam = boto3.resource('iam')
+    current_user = iam.CurrentUser().user_name
+    
+    if (current_user == 'username'):
+        response = secrets_manager_client.get_secret_value(
+            SecretId='secreit id here'
+        )
+        secret_string = response["SecretString"]
+        secret_dict = json.loads(secret_string)
+        return secret_dict['secret dict']
+        
+    elif (current_user == 'username'):
+        response = secrets_manager_client.get_secret_value(
+            SecretId='secreit id here'
+        )
+        secret_string = response["SecretString"]
+        secret_dict = json.loads(secret_string)
+        return secret_dict['secret dict']
+    else:
+        print("You do not have access to any of these secrets.")
+
+def get_etherscan_api_key():
+    secrets_manager_client = boto3.client(
+        'secretsmanager'
+    )
+    response = secrets_manager_client.get_secret_value(
+        
+	SecretId='secret id here'
+    )
+    secret_string = response["SecretString"]
+    secret_dict = json.loads(secret_string)
+    return secret_dict['secret dict']
+    
+def get_test_account_info():
+    "returns as a list"
+    secrets_manager_client = boto3.client(
+        'secretsmanager'
+    )
+    response = secrets_manager_client.get_secret_value(
+        SecretId='secret id here'
+    )
+    secret_string = response["SecretString"]
+    secret_dict = json.loads(secret_string)
+    
+    public_private_key_pair = []
+    for key in secret_dict:
+        if (key.startswith("TestAccount")):
+            public_private_key_pair.append(secret_dict[key])
+    
+    return public_private_key_pair
+
+    
+# ---------------- Tracking Ethereum Account Balances Using Etherscan API ----------------------- #
+
+def mainnet_make_api_url(module, action, mainnet_address, **kwargs):
+	url = MAINNET_BASE_URL + f"?module={module}&action={action}&address={mainnet_address}&apikey={API_KEY}"
+
+	for key, value in kwargs.items():
+		url += f"&{key}={value}"
+
+	return url
+	
+def mainnet_make_api_url_no_address(module, action, **kwargs):
+	url = MAINNET_BASE_URL + f"?module={module}&action={action}&apikey={API_KEY}"
+
+	for key, value in kwargs.items():
+		url += f"&{key}={value}"
+
+	return url
+
+def mainnet_get_account_balance(mainnet_address):
+	balance_url = mainnet_make_api_url("account", "balance", mainnet_address, tag="latest")
+	response = get(balance_url)
+	data = response.json()
+
+	value = int(data["result"]) / ETHER_VALUE
+	return value
+	
+def mainnet_get_wallet_transactions(mainnet_address):
+    transactions_url = mainnet_make_api_url("account", "txlist", mainnet_address, startblock=0, page=1, offset=10000, sort="asc")
+    response = get(transactions_url)
+    data = response.json()["result"]
+
+    internal_tx_url = mainnet_make_api_url("account", "txlistinternal", mainnet_address, startblock=0, page=1, offset=10000, sort="asc")
+    response2 = get(internal_tx_url)
+    data2 = response2.json()["result"]
+    
+    data.extend(data2)
+    data.sort(key=lambda x: int(x['timeStamp']))
+    
+    return data
+
+
+def mainnet_get_transactions(mainnet_address):
+	transactions_url = mainnet_make_api_url("account", "txlist", mainnet_address, startblock=0, page=1, offset=10000, sort="asc")
+	response = get(transactions_url)
+	data = response.json()["result"]
+
+	internal_tx_url = mainnet_make_api_url("account", "txlistinternal", mainnet_address, startblock=0, page=1, offset=10000, sort="asc")
+	response2 = get(internal_tx_url)
+	data2 = response2.json()["result"]
+
+	data.extend(data2)
+	data.sort(key=lambda x: int(x['timeStamp']))
+
+	current_balance = 0
+	balances = []
+	times = []
+	
+	for tx in data:
+		to = tx["to"]
+		from_addr = tx["from"]
+		value = int(tx["value"]) / ETHER_VALUE
+
+		if "gasPrice" in tx:
+			gas = int(tx["gasUsed"]) * int(tx["gasPrice"]) / ETHER_VALUE
+		else:
+			gas = int(tx["gasUsed"]) / ETHER_VALUE
+
+		time = datetime.fromtimestamp(int(tx['timeStamp']))
+		money_in = to.lower() == mainnet_address.lower()
+
+		if money_in:
+			current_balance += value
+		else:
+			current_balance -= value + gas
+
+		balances.append(current_balance)
+		times.append(time)
+
+	list_to_return = [times,balances]
+	return list_to_return
+	
+def make_wallet_balance_over_time_csv(wallet_address, times_balances_data_list):
+    file_path = "data2/wallet_balance_over_time/" + wallet_address + "_wallet_balance_over_time.csv"
+    file_to_upload = open(file_path, 'w')
+    
+    times = times_balances_data_list[0]
+    balances = times_balances_data_list[1]
+    
+    # Prepare csv and csv header
+    writer = csv.writer(file_to_upload)
+    header = ['wallet_address', 'balance', 'timestamp']
+    writer.writerow(header)
+    
+    for i in range(0, len(times)):
+        row = [wallet_address, balances[i], times[i]]
+        writer.writerow(row)
+    
+    file_to_upload.close()
+    
+
+def make_wallet_token_transfer_events_csv(wallet_address, response):
+    file_path =  wallet_address + "_wallet_token_transfer_events.csv"
+    file_to_upload = open(file_path, 'w')
+    
+    # Prepare csv and csv header
+    writer = csv.writer(file_to_upload)
+    header = ['wallet_address', 'contract_address', 'token_name', 'token_id','to', 'from','timestamp']
+    writer.writerow(header)
+    
+    for i in response:
+        print(i)
+        if ('tokenID' in i.keys()):
+            row = [wallet_address,
+            i['contractAddress'],
+            i['tokenName'],
+            i['tokenID'],
+            i['to'],
+            i['from'],
+            i['timeStamp']]
+        else:
+            row = [wallet_address,
+            i['contractAddress'],
+            i['tokenName'],
+            "",
+            i['to'],
+            i['from'],
+            i['timeStamp']]
+        writer.writerow(row)
+    
+    file_to_upload.close()
+    
+    return file_to_upload
+    
+def make_wallet_transaction_history_csv(wallet_address,response):
+    file_path =  wallet_address + "_wallet_transaction_history.csv"
+    file_to_upload = open(file_path, 'w')
+    
+    # Prepare csv and csv header
+    writer = csv.writer(file_to_upload)
+    header = ['wallet_address', 'contract_address','value','to', 'from','timestamp']
+    writer.writerow(header)
+    
+    for i in response:
+        row = [wallet_address,
+        i['contractAddress'],
+        i['value'],
+        i['to'],
+        i['from'],
+        i['timeStamp']]
+        writer.writerow(row)
+    
+    file_to_upload.close()
+    
+    return file_to_upload
+    
+	
+def mainnet_get_ERC20_token_transfer_events(wallet_address):
+    request_url = mainnet_make_api_url("account", "tokentx", wallet_address)
+    response = get(request_url)
+    response = response.json()["result"]
+    return response
+    
+def mainnet_get_ERC721_token_transfer_events(wallet_address):
+    request_url = mainnet_make_api_url("account", "tokennfttx", wallet_address)
+    response = get(request_url)
+    response = response.json()["result"]
+    return response
+    
+def mainnet_get_ERC1155_token_transfer_events(wallet_address):
+    request_url = mainnet_make_api_url("account", "token1155tx", wallet_address)
+    response = get(request_url)
+    response = response.json()["result"]
+    return response
+    
+def mainnet_get_all_token_transfer_events(wallet_address):
+    data = mainnet_get_ERC20_token_transfer_events(wallet_address)
+    data2 = mainnet_get_ERC721_token_transfer_events(wallet_address)
+    data3 = mainnet_get_ERC1155_token_transfer_events(wallet_address)
+    
+    data.extend(data2)
+    data.extend(data3)
+    data.sort(key=lambda x: int(x['timeStamp']))
+    
+    return data
+	
+def get_contract_abi(contract_address):
+    get_contract_url = mainnet_make_api_url("contract","getabi", contract_address)
+    response = get(get_contract_url)
+    response = response.json()["result"]
+    return response
+  
+# ---------------- Tracking Ethereum Account Balances Using Rinkeby Testnet Etherscan API ----------------------- #
+
+def rinkeby_make_api_url(module, action, rinkeby_address, **kwargs):
+	url = RINKEBY_BASE_URL + f"?module={module}&action={action}&address={rinkeby_address}&apikey={API_KEY}"
+
+	for key, value in kwargs.items():
+		url += f"&{key}={value}"
+
+	return url
+
+def rinkeby_get_account_balance(rinkeby_address):
+	rinkeby_balance_url = rinkeby_make_api_url("account", "balance", rinkeby_address, tag="latest")
+	rinkeby_response = get(rinkeby_balance_url)
+	rinkeby_data = rinkeby_response.json()
+
+	rinkeby_value = int(rinkeby_data["result"]) / ETHER_VALUE
+	print("I'm in rinkeby_get_account_balance()")
+	return rinkeby_value
+    
+
+def rinkeby_get_transactions(rinkeby_address):
+	rinkeby_transactions_url = rinkeby_make_api_url("account", "txlist", rinkeby_address, startblock=10805381, endblock=10937380, page=1, offset=10000, sort="asc")
+	rinkeby_response = get(rinkeby_transactions_url)
+	rinkeby_data = rinkeby_response.json()["result"]
+	
+	internal_tx_url = rinkeby_make_api_url("account", "txlistinternal", rinkeby_address, startblock=0, endblock=1093713, page=1, offset=10000, sort="asc")
+	response2 = get(internal_tx_url)
+	data2 = response2.json()["result"]
+	
+	rinkeby_data.extend(data2)
+	rinkeby_data.sort(key=lambda x: int(x['timeStamp']))
+	
+
+	current_balance = 0
+	balances = []
+	times = []
+	
+	for tx in rinkeby_data:
+		to = tx["to"]
+		from_addr = tx["from"]
+		value = int(tx["value"]) / ETHER_VALUE
+
+		if "gasPrice" in tx:
+			gas = int(tx["gasUsed"]) * int(tx["gasPrice"]) / ETHER_VALUE
+		else:
+			gas = int(tx["gasUsed"]) / ETHER_VALUE
+
+		time = datetime.fromtimestamp(int(tx['timeStamp']))
+		money_in = to.lower() == rinkeby_address.lower()
+
+		if money_in:
+			current_balance += value
+		else:
+			current_balance -= value + gas
+			
+		balances.append(current_balance)
+		times.append(time)
+		
+	list_to_return = [times,balances]
+	return list_to_return
+	
+# ------------------------ OpenSea API - Collections ------------------------------ #
+def retrieve_collection(collection_slug):
+    url = "https://api.opensea.io/api/v1/collection/" + collection_slug
+    response = requests.get(url)
+    return response.text
+
+def retrieve_collection_stats(collection_slug):
+    url = "https://api.opensea.io/api/v1/collection/" + collection_slug + "/stats"
+    headers = {"Accept": "application/json"}
+    response = requests.get(url, headers=headers)
+    return response.text
+
+# -------------------------- Common Methods ------------------------------ #
+	
+def make_graph(xdata, ydata, figure_number, file_name):
+    
+    plt.figure(figure_number)
+    plt.plot(xdata, ydata)
+    plt.savefig(file_name)
+
+# -------------------------- Moralis API Calls -------------------------------#
+
+from requests.auth import HTTPBasicAuth
+
+def moralis_get_nft_owners(contract_address, **kwargs):
+    url = 'https://deep-index.moralis.io/api/v2/nft/' + contract_address + '/owners?chain=eth&format=decimal'
+    headers = {'Accept': 'application/json', 'x-api-key': 'api key here'}
+    auth = HTTPBasicAuth('x-api-key', 'api key here')
+
+    req = get(url, headers=headers, auth=auth)
+    req = req.json()
+    
+    cursor = req['cursor']
+    results = req['result']
+    
+    while( (req['page'] * req['page_size']) < req['total']): # limit to 1,000 records for now
+        url = 'https://deep-index.moralis.io/api/v2/nft/' + contract_address + '/owners?chain=eth&format=decimal&cursor=' + cursor
+        headers = {'Accept': 'application/json', 'x-api-key': 'api key here'}
+        auth = HTTPBasicAuth('x-api-key', 'api key here')
+        time.sleep(1.1) # needed to not hit request rate limit
+        req = get(url, headers=headers, auth=auth)
+        req = req.json()
+        print('page:', req['page'])
+        print('page size:', req['page_size'])
+        print((req['page'] * req['page_size']), "/", req['total'], "seen")
+        results += req['result']
+        cursor = req['cursor']
+    
+    return results
+    
+# Need prices of tokens in a certain collection for each wallet
+def get_token_balances_specific_address(wallet_address):
+    url = 'https://deep-index.moralis.io/api/v2/' + wallet_address + '/erc20?chain=eth'
+    headers = {'Accept': 'application/json', 'x-api-key': 'api key here'}
+    auth = HTTPBasicAuth('x-api-key', 'api key here')
+
+    req = get(url, headers=headers, auth=auth)
+    req = req.json()
+    
+    return req
+    
+def get_token_balances_specific_wallet_address_and_collection(wallet_address, token_address):
+    url = 'https://deep-index.moralis.io/api/v2/' + wallet_address + '/erc20?chain=eth&token_addresses=' + token_address
+    headers = {'Accept': 'application/json', 'x-api-key': 'api key here'}
+    auth = HTTPBasicAuth('x-api-key', 'api key here')
+
+    req = get(url, headers=headers, auth=auth)
+    req = req.json()
+    
+    return req
+    
+def make_csv_of_NFT_tokens(collection_slug, response):
+    # Create file name and path
+    string_list = collection_slug.split(" ")
+    file_path = ""
+    for i in string_list:
+        file_path = file_path + i + "_"
+    file_path = 'data/' + file_path[:-1] + '/' + file_path + "tokens.csv"
+    file_to_upload = open(file_path, 'w')
+    
+    # Prepare csv and csv header
+    writer = csv.writer(file_to_upload)
+    header = ['token_address', 'token_id', 'amount', 'owner_of', 'token_hash', 'block_number_minted', 'block_number', 'updated_at', 'contract_type', 'name', 'symbol', 'token_uri']
+    writer.writerow(header)
+    
+    # write response data to csv
+    for i in range (0, len(response)):
+        row = [response[i]['token_address'],
+        response[i]['token_id'], 
+        response[i]['amount'],
+        response[i]['owner_of'],
+        response[i]['token_hash'],
+        response[i]['block_number_minted'],
+        response[i]['block_number'],
+        response[i]['updated_at'],
+        response[i]['contract_type'],
+        response[i]['name'],
+        response[i]['symbol'],
+        response[i]['token_uri']]
+        writer.writerow(row)
+
+    file_to_upload.close()
+    
+    
+    
+    # return response to get data that is consistent with this run
+    return response
+    
+def make_csv_of_NFT_wallets(collection_slug, wallets_list):
+    # Create file name and path
+    string_list = collection_slug.split(" ")
+    file_path = ""
+    for i in string_list:
+        file_path = file_path + i + "_"
+    file_path = 'data/' + file_path + "wallet_balance_collection.csv"
+    file_to_upload = open(file_path, 'w')
+    
+    # Prepare csv and csv header
+    writer = csv.writer(file_to_upload)
+    header = ['wallet_address', 'amount', 'token_address', 'name', 'symbol', 'logo', 'thumbnail', 'decimals', 'balance']
+    writer.writerow(header)
+    
+    # write response data to csv
+    for i in wallets_list:
+        row = []
+        row.append(i[0]) # wallet address
+        row.append(i[1]) # amount of tokens of collection
+        data = get_token_balances_specific_wallet_address_and_collection(i[0], TOP_TEN_NFT_COLLECTIONS[collection_slug])
+        print(data)
+        if (data != []):
+            row.append(data[0]['token_address'])
+            row.append(data[0]['name'])
+            row.append(data[0]['symbol'])
+            row.append(data[0]['logo'])
+            row.append(data[0]['thumbnail'])
+            row.append(data[0]['decimals'])
+            row.append(data[0]['balance'])
+            writer.writerow(row)
+        time.sleep(0.1) # trying to to make too many requests at once
+
+    file_to_upload.close()
+    
+    return file_to_upload
+    
+def make_csv_of_NFT_wallets_balance_general(collection_slug, wallets_list):
+    # Create file name and path
+    string_list = collection_slug.split(" ")
+    file_path = ""
+    for i in string_list:
+        file_path = file_path + i + "_"
+    file_path = 'data/' + file_path + "wallet_balance_general.csv"
+    file_to_upload = open(file_path, 'w')
+    
+    # Prepare csv and csv header
+    writer = csv.writer(file_to_upload)
+    header = ['wallet_address', 'total_wallet_balance']
+    writer.writerow(header)
+    
+    # write response data to csv
+    for i in wallets_list:
+        row = []
+        row.append(i[0]) # wallet address
+        row.append(mainnet_get_account_balance(i[0]))
+        print(row)
+        writer.writerow(row)
+        time.sleep(0.1)
+
+    file_to_upload.close()
+    
+    # return response to get data that is consistent with this run
+    return response
+
+def get_distribution_of_owners(response):
+    newlist = sorted(response, key=lambda d: d['owner_of']) # Might make things faster?
+    # Get distribution of owners (how many tokens of that collection does each wallet have?)
+    owners_num_of_tokens = {}
+    for i in newlist:
+        if (i['owner_of'] in owners_num_of_tokens):
+            owners_num_of_tokens[i['owner_of']] += 1
+        else:
+            owners_num_of_tokens[i['owner_of']] = 1
+    
+    return owners_num_of_tokens
+    
+# -------------------------- Demo Calls ------------------------------ #
+
+API_KEY = get_etherscan_api_key()
+MAINNET_BASE_URL = "https://api.etherscan.io/api"
+RINKEBY_BASE_URL = "https://api-rinkeby.etherscan.io/api"
+ETHER_VALUE = 10 ** 18
+MAINNET_ADDRESS = "" #address of desired wallet
+RINKEBY_ADDRESS = "" #address of desired wallet
+
+TOP_TEN_NFT_COLLECTIONS = {
+    'bored ape yacht club': '0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d', 
+    'mutant ape yacht club': '0x60e4d786628fea6478f785a6d7e704777c86a7c6',
+    'otherdeed for otherside': '0x34d85c9CDeB23FA97cb08333b511ac86E1C4E258',
+    'art blocks curated': '0xa7d8d9ef8d8ce8992df33d8b8cf4aebabd5bd270',
+    'azuki': '0xed5af388653567af2f388e6224dc7c4b3241c544',
+    'decentraland': '0xf87e31492faf9a91b02ee0deaad50d51d56d5d4d',
+    'clone x x-takashi murakami': '0x49cf6f5d44e70224e2e23fdcdd2c053f30ada28b',
+    'The Sandbox': '0x5cc5b05a8a13e3fbdb0bb9fccd98d38e50f90c38',
+    'moonbirds': '0x23581767a106ae21c074b2276d25e5c3e136a68b',
+    'cryptopunks': '0xb47e3cd837dDF8e4c57F05d70Ab865de6e193BBB'
+    
+}
+
+
+
+# rinkeby_eth=rinkeby_get_account_balance(RINKEBY_ADDRESS)
+# print(rinkeby_eth)
+# data = rinkeby_get_transactions(RINKEBY_ADDRESS)
+
+# make_graph(data[0], data[1], 1, 'rinkebygraph.png')
+
+# mainnet_eth= mainnet_get_account_balance(MAINNET_ADDRESS)
+# print(mainnet_eth)
+# data = mainnet_get_transactions(MAINNET_ADDRESS)
+
+# make_graph(data[0], data[1], 2, 'mainnetgraph.png')
+
+# ------------------ NFT Owners Demo Method Calls---------------------------------------#
+
+# print("\nGet Collection: ")
+# user_input = input("Type anything to continue: ") # This wil be used to stop outputs
+
+# response = retrieve_collection("cryptopunks")
+# response = json.loads(response)
+
+# print("Get collection info from OpenSea")
+# user_input = input("Type anything to continue: ")
+# print(response["collection"])
+
+# print("\nGet Collection Stats")
+# user_input = input("Type anything to continue: ")
+# print(retrieve_collection_stats("cryptopunks"))
+
+# print("\nGet NFT Owners\n")
+# user_input = input("Type anything to continue: ")
+# response = moralis_get_nft_owners('0xb47e3cd837dDF8e4c57F05d70Ab865de6e193BBB')
+# print(response)
+
+# print("\nGetting distribution of owners:")
+# user_input = input("Type anything to continue: ")
+# newlist = sorted(response, key=lambda d: d['owner_of']) # Might make things faster?
+# # Get distribution of owners (how many cryptopunks does each wallet have?)
+# cryptopunks_owners_num_of_tokens = {}
+# for i in newlist:
+#     if (i['owner_of'] in cryptopunks_owners_num_of_tokens):
+#         cryptopunks_owners_num_of_tokens[i['owner_of']] += 1
+#     else:
+#         cryptopunks_owners_num_of_tokens[i['owner_of']] = 1
+# print(" Wallet : number of Cryptopunks owned by wallet \n", cryptopunks_owners_num_of_tokens)
+# # Checking if we got 400 punks
+# num_of_punks = 0
+# for key in cryptopunks_owners_num_of_tokens:
+#     num_of_punks += cryptopunks_owners_num_of_tokens[key]
+# print("Number of Cryptopunks seen from API call:", num_of_punks)
+
+
+# #DUBUG: Get all pages from API call (problems with cursor)
+# # Checking for paging issue with moralis_get_nft_owners()
+# print("\nToken Balances for specifc address:")
+# user_input = input("Type anything to continue: ")
+# print("Token Balances for 0xb7f7f6c52f2e2fdb1963eab30438024864c313f6,\n who owns 139 Cryptopunks:\n", get_token_balances_specific_address('0xb7f7f6c52f2e2fdb1963eab30438024864c313f6'))
+# user_input = input("Type anything to continue: ")
+# print("Token Balances for 0x0232d1083e970f0c78f56202b9a666b526fa379f,\n who owns 29 Cryptopunks:\n", get_token_balances_specific_address('0x0232d1083e970f0c78f56202b9a666b526fa379f'))
+
+#find out distribution based on the amount of money they have
+
+# ------------------------------- write info to a CSV --------------------------------- #
+import csv
+
+# response = mainnet_get_account_balance("0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae")
+# print(type(response))
+# print(response)
+
+response = moralis_get_nft_owners(TOP_TEN_NFT_COLLECTIONS["bored ape yacht club"])
+# make_csv_of_NFT_tokens("bored ape yacht club", response)
+# owners_num_of_tokens = get_distribution_of_owners(response)
+# print("Get addresses for that collection (sorting by value)")
+# sorted_owners = sorted(owners_num_of_tokens.items(), key=lambda x: x[1], reverse=True)
+# print(sorted_owners)
+# make_csv_of_NFT_wallets_balance_general("bored ape yacht club", sorted_owners)
+# for i in sorted_owners:
+#     print(i)
+#     address = i[0]
+#     times_balances_data_list = mainnet_get_transactions(address)
+#     make_wallet_balance_over_time_csv(address, times_balances_data_list)
+
+# response = moralis_get_nft_owners(TOP_TEN_NFT_COLLECTIONS["cryptopunks"])
+# make_csv_of_NFT_tokens("cryptopunks", response)
+# owners_num_of_tokens = get_distribution_of_owners(response)
+# print("Get addresses for that collection (sorting by value)")
+# sorted_owners = sorted(owners_num_of_tokens.items(), key=lambda x: x[1], reverse=True)
+# print(sorted_owners)
+# make_csv_of_NFT_wallets_balance_general("cryptopunks", sorted_owners)
+
+# response = moralis_get_nft_owners(TOP_TEN_NFT_COLLECTIONS["mutant ape yacht club"])
+# make_csv_of_NFT_tokens("mutant ape yacht club", response)
+# owners_num_of_tokens = get_distribution_of_owners(response)
+# print("Get addresses for that collection (sorting by value)")
+# sorted_owners = sorted(owners_num_of_tokens.items(), key=lambda x: x[1], reverse=True)
+# print(sorted_owners)
+# make_csv_of_NFT_wallets_balance_general("mutant ape yacht club", sorted_owners)
+
+# response = moralis_get_nft_owners(TOP_TEN_NFT_COLLECTIONS["otherdeed for otherside"])
+# make_csv_of_NFT_tokens("otherdeed for otherside", response)
+# owners_num_of_tokens = get_distribution_of_owners(response)
+# print("Get addresses for that collection (sorting by value)")
+# sorted_owners = sorted(owners_num_of_tokens.items(), key=lambda x: x[1], reverse=True)
+# print(sorted_owners)
+# make_csv_of_NFT_wallets_balance_general("otherdeed for otherside", sorted_owners)
+
+# response = moralis_get_nft_owners(TOP_TEN_NFT_COLLECTIONS["art blocks curated"])
+# make_csv_of_NFT_tokens("art blocks curated", response)
+# owners_num_of_tokens = get_distribution_of_owners(response)
+# print("Get addresses for that collection (sorting by value)")
+# sorted_owners = sorted(owners_num_of_tokens.items(), key=lambda x: x[1], reverse=True)
+# print(sorted_owners)
+# make_csv_of_NFT_wallets_balance_general("art blocks curated", sorted_owners)
+
+# response = moralis_get_nft_owners(TOP_TEN_NFT_COLLECTIONS["azuki"])
+# make_csv_of_NFT_tokens("azuki", response)
+# owners_num_of_tokens = get_distribution_of_owners(response)
+# print("Get addresses for that collection (sorting by value)")
+# sorted_owners = sorted(owners_num_of_tokens.items(), key=lambda x: x[1], reverse=True)
+# print(sorted_owners)
+# make_csv_of_NFT_wallets_balance_general("azuki", sorted_owners)
+
+# response = moralis_get_nft_owners(TOP_TEN_NFT_COLLECTIONS["clone x x-takashi murakami"])
+# make_csv_of_NFT_tokens("clone x x-takashi murakami", response)
+# owners_num_of_tokens = get_distribution_of_owners(response)
+# print("Get addresses for that collection (sorting by value)")
+# sorted_owners = sorted(owners_num_of_tokens.items(), key=lambda x: x[1], reverse=True)
+# print(sorted_owners)
+# make_csv_of_NFT_wallets_balance_general("clone x x-takashi murakami", sorted_owners)
+
+# response = moralis_get_nft_owners(TOP_TEN_NFT_COLLECTIONS["decentraland"])
+# make_csv_of_NFT_tokens("decentraland", response)
+# owners_num_of_tokens = get_distribution_of_owners(response)
+# print("Get addresses for that collection (sorting by value)")
+# sorted_owners = sorted(owners_num_of_tokens.items(), key=lambda x: x[1], reverse=True)
+# print(sorted_owners)
+# make_csv_of_NFT_wallets_balance_general("decentraland", sorted_owners)
+
+# response = moralis_get_nft_owners(TOP_TEN_NFT_COLLECTIONS["The Sandbox"])
+# make_csv_of_NFT_tokens("The Sandbox", response)
+# owners_num_of_tokens = get_distribution_of_owners(response)
+# print("Get addresses for that collection (sorting by value)")
+# sorted_owners = sorted(owners_num_of_tokens.items(), key=lambda x: x[1], reverse=True)
+# print(sorted_owners)
+# make_csv_of_NFT_wallets_balance_general("The Sandbox", sorted_owners)
+
+# response = moralis_get_nft_owners(TOP_TEN_NFT_COLLECTIONS["moonbirds"])
+# make_csv_of_NFT_tokens("moonbirds", response)
+# owners_num_of_tokens = get_distribution_of_owners(response)
+# print("Get addresses for that collection (sorting by value)")
+# sorted_owners = sorted(owners_num_of_tokens.items(), key=lambda x: x[1], reverse=True)
+# print(sorted_owners)
+# make_csv_of_NFT_wallets_balance_general("moonbirds", sorted_owners)
+
+response = mainnet_get_all_token_transfer_events('0x5d7aaa862681920ea4f350a670816b0977c80b37')
+make_wallet_token_transfer_events_csv('0x5d7aaa862681920ea4f350a670816b0977c80b37', response)
+
+response = mainnet_get_wallet_transactions('0x5d7aaa862681920ea4f350a670816b0977c80b37')
+make_wallet_transaction_history_csv('0x5d7aaa862681920ea4f350a670816b0977c80b37',response)
