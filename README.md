@@ -71,13 +71,13 @@ https (grc) : codecommit::us-east-1://blockchain-project
     * Install the plugin for your browser. 
     * Follow the instructions for your wallet password. 
     * Once you have created your account, click on your profile photo on the upper right hand side and navigate to settings
-* [Image: rinkeby metamask settings.png]
+* ![image](https://user-images.githubusercontent.com/82061449/226415135-899cccf8-4b63-42fd-9755-983bb2b6f303.png)
     * Go to the “Advanced” section and scroll down to show test networks and click “on”.
-* [Image: rinkeby show test networks.png]
+* ![image](https://user-images.githubusercontent.com/82061449/226415456-29241ccb-dfb0-4420-890f-1d97b7181b50.png)
     * Navigate to the upper right hand side and select “Rinkeby Test Network”
-* [Image: show rinkeby net.png]
+* ![image](https://user-images.githubusercontent.com/82061449/226415550-289bf989-192c-40af-b2d0-9b7023d8215c.png)
     * To view your wallet address, click on the three dots and select “account details”
-* [Image: getting account details rinkeby metamask.png]
+* ![image](https://user-images.githubusercontent.com/82061449/226415635-972b4692-a8f5-492f-830d-cda191b53763.png)
     * Here, you can see your wallet address and also export your wallet’s private key. 
 
 #### Setting Up Accounts for APIs  
@@ -87,7 +87,7 @@ https (grc) : codecommit::us-east-1://blockchain-project
 * Follow the instructions for creating your account.
 * Navigate to your profile and click “my profile.”
 * Scroll down on the left side and select “API Keys”
-* [Image: image.png]
+* ![image](https://user-images.githubusercontent.com/82061449/226415741-0a259dc4-dd5b-46f5-afff-4715fb3a3f88.png)
 * Now create your API key by clicking “add”
 * [Image: image.png]
 * Now, let’s get the Moralis API Key.
