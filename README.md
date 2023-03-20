@@ -64,7 +64,7 @@ https (grc) : codecommit::us-east-1://blockchain-project
 
 ### Learning and Code Development
 
-[Image: Learning_Development_Arch_Diagram(3)(1).jpg]
+![image](https://user-images.githubusercontent.com/82061449/226414288-12be474a-2625-4aca-b40d-360a58dd12ac.png)
 #### Getting Test Wallets and Ethereum 
 
 * For creating your test wallet, go to [metamask.io](http://metamask.io/)
